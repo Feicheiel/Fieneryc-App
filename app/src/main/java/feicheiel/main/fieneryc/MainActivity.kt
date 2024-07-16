@@ -388,7 +388,7 @@ fun ConnectScreen(
     ) {
         bluetoothEnabled = bluetoothAdapter?.isEnabled == true
         if (bluetoothEnabled) {
-            //showDialog = true
+            showDialog = true
         }
     }
 
@@ -422,11 +422,10 @@ fun ConnectScreen(
         Image(
             painter = bckConnectScreen,
             contentDescription = "A man holds his phone to connect to a smart device attached to the wall",
-            contentScale = ContentScale.FillBounds,
-            alpha = 0.3f
+            contentScale = ContentScale.FillBounds
         )
         Text(
-            text = "Let's begin by first connecting you to your Smart Meter. \n- Please press the Connect button below \n- Select the name of your meter from the list of devices",
+            text = "Let's begin by first connecting you to your Smart Meter. \nPlease press the Connect button below \nSelect the name of your meter from the list of devices",
             style = TextStyle(
                 fontFamily = neueFontFamily,
                 fontWeight = FontWeight.Normal
