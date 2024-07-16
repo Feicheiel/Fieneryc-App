@@ -57,14 +57,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.ui.platform.LocalContext
 import feicheiel.main.fieneryc.ui.theme.FienerycTheme
 import kotlinx.coroutines.delay
 import android.annotation.SuppressLint
+import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.IntentFilter
 import android.location.Location
-import android.os.Environment
+import android.location.LocationManager
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.opencsv.CSVWriter
@@ -72,20 +74,22 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.material.*
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
@@ -97,6 +101,35 @@ val neueFontFamily = FontFamily(
     Font(R.font.black, FontWeight.Black),
     Font(R.font.light, FontWeight.Light),
     Font(R.font.regular, FontWeight.Normal)
+)
+
+// DEFINITION OF CONSTANTS
+enum class BluetoothState {
+     CONNECTED,
+     DISCONNECTED,
+     OFF
+}
+
+enum class LocationState {
+    ENABLED,
+    DISABLED
+}
+
+object BroadcastActions {
+    const val ACTION_UPDATE_UI_STATE = "feicheiel.main.fieneryc.ACTION_UPDATE_UI_STATE"
+}
+enum class ConsumptionStatus {
+    NORMAL,
+    HIGH
+}
+
+data class UIState (
+    var signalStrength: Int = 0,
+    var energyConsumption: Double = 0.0,
+    var consumptionStatus: ConsumptionStatus = ConsumptionStatus.NORMAL,
+    var consumptionUnit: String = "",
+    var switchStates: List<Boolean> = listOf(false, false, false),
+    var rcv: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -113,40 +146,187 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
         setContent {
             FienerycTheme {
                 StartThisApp()
             }
         }
+
         requestBluetoothPermissions()
     }
 
     private fun requestBluetoothPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            requestBluetoothPermissionsLauncher.launch(
-                arrayOf(
-                    Manifest.permission.BLUETOOTH,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_ADMIN
-                )
+        requestBluetoothPermissionsLauncher.launch(
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_ADMIN
             )
-        }
+        )
     }
 }
 
 @Composable
 fun StartThisApp() {
     val navController = rememberNavController()
-    val receivedData by remember { mutableStateOf("") }
-    
 
     NavHost(navController = navController, startDestination = "splash") {
         composable("splash") { SplashScreen(navController)}
         composable("connect") { ConnectScreen(navController) }
-        composable("data") { LiveDataScreen(receivedData) }
+        composable("data") { LiveDataScreen() }
     }
 }
+
+// BROADCAST RECEIVERS
+class BluetoothViewModel(application: Application) : AndroidViewModel(application) {
+    private val _bluetoothState = MutableLiveData<BluetoothState>()
+    val bluetoothState: LiveData<BluetoothState> = _bluetoothState
+
+    private val bluetoothStateReceiver = BluetoothStateReceiver {state ->
+        _bluetoothState.postValue(state)
+    }
+
+    init {
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED)
+        }
+        application.registerReceiver(bluetoothStateReceiver, filter)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        getApplication<Application>().unregisterReceiver(bluetoothStateReceiver)
+    }
+
+    class BluetoothStateReceiver(
+        private val onBluetoothStateChanged: (BluetoothState) -> Unit
+    ) : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                    val isBluetoothOn = state == BluetoothAdapter.STATE_ON
+                    if (isBluetoothOn) onBluetoothStateChanged(BluetoothState.DISCONNECTED) else onBluetoothStateChanged(BluetoothState.OFF)
+                }
+                BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED -> {
+                    val state = intent.getIntExtra(BluetoothAdapter.EXTRA_CONNECTION_STATE, BluetoothAdapter.ERROR)
+                    val isBluetoothConnected = state == BluetoothAdapter.STATE_CONNECTED
+                    if (isBluetoothConnected) onBluetoothStateChanged(BluetoothState.CONNECTED) else onBluetoothStateChanged(BluetoothState.DISCONNECTED)
+                }
+            }
+        }
+    }
+}
+
+class LocationViewModel(application: Application) : AndroidViewModel(application) {
+    private val _locationState = MutableLiveData<LocationState>()
+    val locationState: LiveData<LocationState> = _locationState
+
+    init {
+        val locationManager = application.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        _locationState.value = if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            LocationState.ENABLED
+        } else {
+            LocationState.DISABLED
+        }
+
+        val filter = IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION)
+        application.registerReceiver(LocationStateReceiver {state ->
+            _locationState.postValue(state)
+        }, filter)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        getApplication<Application>().unregisterReceiver(LocationStateReceiver {})
+    }
+
+    class LocationStateReceiver(
+        private val onLocationStateChanged: (LocationState) -> Unit
+    ) : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
+                val locationManager = context?.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                val isLocationEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                if (isLocationEnabled) onLocationStateChanged(LocationState.ENABLED) else onLocationStateChanged(LocationState.DISABLED)
+            }
+        }
+    }
+}
+
+// STATE VARIABLES TO PARSE RECEIVED INFORMATION.
+@NoLiveLiterals
+private fun parseData(data: String): UIState {
+    // +RCV=11731,8,1312,u,1,0,1,-99,-40
+    // <send_addr>,<payload_bytes>,<en>,<unit>,<s1>,<l>,<s2>,<rssi>,<snr>
+    // 0,           1,              2,   3,     4,   5,  6,   7,     8
+    val parsedData = UIState(0,0.0,ConsumptionStatus.NORMAL,"",List<Boolean>(size=3){false; false; false})
+    val dataSplit = data.split(",")
+    if (dataSplit.size < 9) {
+        //means incomplete data read
+    } else {
+        parsedData.energyConsumption = dataSplit[2].toDouble()
+        parsedData.signalStrength = dataSplit[7].toInt()
+        parsedData.consumptionUnit = when (dataSplit[3]) {
+            "u" -> "Wh"
+            "k" -> "kWh"
+            else -> {""}
+        }
+        parsedData.switchStates = List<Boolean>(size = 3){
+            (dataSplit[4] == "1"); (dataSplit[5] == "1"); (dataSplit[6] == "1")
+        }
+        parsedData.consumptionStatus = if ((parsedData.energyConsumption > 150.0) && (parsedData.consumptionUnit == "kWh")) ConsumptionStatus.HIGH else ConsumptionStatus.NORMAL
+        parsedData.rcv = data
+    }
+    return parsedData
+}
+
+fun sendUIStateBroadcast(context: Context, data: String) {
+    val uiState = parseData(data)
+    val intent = Intent(BroadcastActions.ACTION_UPDATE_UI_STATE).apply {
+        putExtra("signalStrength", uiState.signalStrength)
+        putExtra("energyConsumption", uiState.energyConsumption)
+        putExtra("consumptionStatus", uiState.consumptionStatus)
+        putExtra("consumptionUnit", uiState.consumptionUnit)
+        putExtra("switchStates", uiState.switchStates.toBooleanArray())
+        putExtra("rcv", uiState.rcv)
+    }
+    LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+}
+
+class UIStateViewModel(application: Application) : AndroidViewModel(application) {
+    private val _uiState = MutableLiveData(UIState())
+    val uiState: LiveData<UIState> = _uiState
+
+    private val broadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                BroadcastActions.ACTION_UPDATE_UI_STATE -> {
+                    val signalStrength = intent.getIntExtra("signalStrength", 0)
+                    val energyConsumption = intent.getDoubleExtra("energyConsumption", 0.0)
+                    val consumptionUnit = intent.getStringExtra("consumptionUint") ?: ""
+                    val consumptionStatus = ConsumptionStatus.entries[intent.getIntExtra("consumptionStatus", 0)]
+                    val switchStates = intent.getBooleanArrayExtra("switchStates")?.toList() ?: listOf(false, false, false)
+                    val rcv = intent.getStringExtra("rcv") ?: ""
+                    _uiState.value = UIState(signalStrength, energyConsumption, consumptionStatus, consumptionUnit, switchStates, rcv)
+                }
+            }
+        }
+    }
+
+    init{
+        val filter = IntentFilter(BroadcastActions.ACTION_UPDATE_UI_STATE)
+        LocalBroadcastManager.getInstance(application).registerReceiver(broadcastReceiver, filter)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        LocalBroadcastManager.getInstance(getApplication()).unregisterReceiver(broadcastReceiver)
+    }
+ }
 
 //SCREENS.
 @Composable
@@ -220,7 +400,7 @@ fun ConnectScreen(navController: NavHostController, modifier: Modifier = Modifie
     }
 
     LaunchedEffect(Unit) {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val permissions =
             arrayOf(
                 Manifest.permission.BLUETOOTH_CONNECT,
                 Manifest.permission.BLUETOOTH_SCAN,
@@ -229,16 +409,6 @@ fun ConnectScreen(navController: NavHostController, modifier: Modifier = Modifie
                 Manifest.permission.ACCESS_COARSE_LOCATION,
                 Manifest.permission.MANAGE_EXTERNAL_STORAGE
             )
-        } else {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADMIN,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-            )
-        }
         requestPermissionsLauncher.launch(permissions)
     }
 
@@ -305,12 +475,9 @@ fun ConnectScreen(navController: NavHostController, modifier: Modifier = Modifie
                     connectToDevice(context, device, onConnectionResult = {success, message ->
                         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                         if (success) {
-                            // ToDo: open live data display screen.
                             navController.navigate("data")
                         }
-                    }, onReceiveData =  {data ->
-                        // TODO: update the UI with the received data.
-                })
+                    })
                 }
             )
         }
@@ -318,32 +485,74 @@ fun ConnectScreen(navController: NavHostController, modifier: Modifier = Modifie
 }
 
 @Composable
-fun LiveDataScreen(data: String, modifier: Modifier = Modifier, isBluetoothEnabled: Boolean = false, isBluetoothConnected: Boolean = false, isLocationEnabled: Boolean = false) {
-    // Image Resources.
-    val bckLiveData = painterResource(id = R.drawable.bck_live_data_scr)
-    val bckDownbar = painterResource(id = R.drawable.downbar_grain)
+fun LiveDataScreen(
+    bluetoothViewModel: BluetoothViewModel = viewModel(),
+    locationViewModel: LocationViewModel = viewModel(),
+    uiStateViewModel: UIStateViewModel = viewModel(),
+    modifier: Modifier = Modifier) {
+    val uiState by uiStateViewModel.uiState.observeAsState(UIState())
+
+    // STATE VARIABLES
+    // 1. Bluetooth
     val imgBluetoothOn = painterResource(id = R.drawable.bluetooth)
     val imgBluetoothOff = painterResource(id = R.drawable.bluetooth_off)
     val imgBluetoothConnected = painterResource(id = R.drawable.bluetooth_connected)
+    val bluetoothState by bluetoothViewModel.bluetoothState.observeAsState(BluetoothState.OFF)
+    val imgBluetoothState: Painter = when (bluetoothState) {
+        BluetoothState.OFF -> imgBluetoothOff
+        BluetoothState.CONNECTED -> imgBluetoothConnected
+        BluetoothState.DISCONNECTED -> imgBluetoothOn
+    }
+    // 2. Location
     val imgLocationOn = painterResource(id = R.drawable.location_on)
     val imgLocationOff = painterResource(id = R.drawable.location_off)
-    val imgNtwk_0 = painterResource(id = R.drawable.ntwk_0)
-    val imgNtwk_1 = painterResource(id = R.drawable.ntwk_1)
-    val imgNtwk_2 = painterResource(id = R.drawable.ntwk_2)
-    val imgNtwk_3 = painterResource(id = R.drawable.ntwk_3)
+    val locationState by locationViewModel.locationState.observeAsState(LocationState.DISABLED)
+    val imgLocation: Painter = when (locationState) {
+        LocationState.ENABLED -> imgLocationOn
+        LocationState.DISABLED -> imgLocationOff
+    }
+    // 3. Signal Strength.
+    val imgNetwork0 = painterResource(id = R.drawable.ntwk_0)
+    val imgNetwork1 = painterResource(id = R.drawable.ntwk_1)
+    val imgNetwork2 = painterResource(id = R.drawable.ntwk_2)
+    val imgNetwork3 = painterResource(id = R.drawable.ntwk_3)
+    val imgNetwork: Painter = if ( uiState.signalStrength <= -80) imgNetwork1
+                           else if (uiState.signalStrength <= -67) imgNetwork2
+                           else if ( uiState.signalStrength <= -30) imgNetwork3
+                           else imgNetwork0
+    // log signal strength to CSV.
+    val context = LocalContext.current
+    logDataToCSV(context, uiState.signalStrength.toString()) {isSuccess, msg ->
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // 4. Ring Colour & Alert Indicator.
+    val imgRingRed = painterResource(id = R.drawable.red_ring)
+    val imgRingGreen = painterResource(id = R.drawable.green_ring)
+    val imgRing: Painter = when (uiState.consumptionStatus) {
+        ConsumptionStatus.HIGH -> imgRingRed
+        ConsumptionStatus.NORMAL -> imgRingGreen
+    }
+    val imgBallRed = painterResource(id = R.drawable.red_ball)
+    val imgBallGreen = painterResource(id = R.drawable.green_ball)
+    val imgBallConsume: Painter = when (uiState.consumptionStatus) {
+        ConsumptionStatus.HIGH -> imgBallRed
+        ConsumptionStatus.NORMAL -> imgBallGreen
+    }
+    val imgBallSensors: Painter = if ((locationState == LocationState.ENABLED) && (bluetoothState == BluetoothState.CONNECTED)) imgBallGreen else imgBallRed
+
+
+    // 5. Switch States Inidicator.
     val imgLightOn = painterResource(id = R.drawable.light_on)
     val imgLightOff = painterResource(id = R.drawable.light_off)
     val imgSwitchOn = painterResource(id = R.drawable.toggle_on)
     val imgSwitchOff = painterResource(id = R.drawable.toggle_off)
-    val imgRingRed = painterResource(id = R.drawable.red_ring)
-    val imgRingGreen = painterResource(id = R.drawable.green_ring)
-    val imgBallRed = painterResource(id = R.drawable.red_ball)
-    val imgBallGreed = painterResource(id = R.drawable.green_ball)
+    val imgSwitch1: Painter = if (uiState.switchStates[0]) imgSwitchOn else imgSwitchOff
+    val imgSwitch2: Painter = if (uiState.switchStates[2]) imgSwitchOn else imgSwitchOff
+    val imgLight: Painter = if (uiState.switchStates[1]) imgLightOn else imgLightOff
 
-    // State Variables.
-    val bluetoothState by remember { mutableStateOf(isBluetoothEnabled) }
-    val connectionState by remember { mutableStateOf(true) }
-    val locationState by remember { mutableStateOf(isLocationEnabled) }
+    // UI Background File.
+    val bckLiveData = painterResource(id = R.drawable.bck_live_data_scr)
 
     // Draw the UI
     Box (modifier.fillMaxSize()){
@@ -360,47 +569,55 @@ fun LiveDataScreen(data: String, modifier: Modifier = Modifier, isBluetoothEnabl
             // status indicator.
             Row (modifier = Modifier.align(Alignment.End)){
                 Image(
-                    painter = if (connectionState) imgBluetoothConnected else if (bluetoothState) imgBluetoothOn else imgBluetoothOff,
+                    painter = imgBluetoothState,
                     contentDescription = "Bluetooth Status indicator: ON, OFF, or CONNECTED",
                     modifier = Modifier.size(17.dp)
                 )
                 Image(
-                    painter = imgLocationOn,
+                    painter = imgLocation,
+                    contentDescription = when (locationState) {
+                        LocationState.DISABLED -> "Location Disabled"
+                        LocationState.ENABLED -> "Location Enabled"
+                    },
+                    modifier = Modifier.size(17.dp)
+                )
+                Image(
+                    painter = imgNetwork,
                     contentDescription = null,
                     modifier = Modifier.size(17.dp)
                 )
                 Image(
-                    painter = imgNtwk_2,
+                    painter = imgBallSensors,
                     contentDescription = null,
-                    modifier = Modifier.size(17.dp)
-                )
-                Image(
-                    painter = imgBallGreed,
-                    contentDescription = null,
-                    modifier = Modifier.size(3.dp).offset(0.dp,7.dp)
+                    modifier = Modifier
+                        .size(3.dp)
+                        .offset(0.dp, 7.dp)
                 )
             }
 
             // energy consumption.
             Box(
-                modifier = Modifier.offset(31.dp, 270.dp)
+                modifier = Modifier
+                    .offset(31.dp, 270.dp)
                     .size(307.dp)
             ){
-                Image(painter = imgRingGreen, contentDescription = null)
+                Image(painter = imgRing, contentDescription = null)
                 Text (
-                    text = "143",
+                    text = uiState.energyConsumption.toString(),
                     fontFamily = neueFontFamily,
                     fontSize = 77.sp,
                     fontWeight = FontWeight.Black,
                     modifier = Modifier.offset(77.dp, 117.dp)
                 )
                 Image(
-                    painter = imgBallGreed,
+                    painter = imgBallConsume,
                     contentDescription = null,
-                    modifier = Modifier.offset(300.dp, 37.dp).size(5.dp)
+                    modifier = Modifier
+                        .offset(300.dp, 37.dp)
+                        .size(5.dp)
                 )
                 Text (
-                    text = "Wh",
+                    text = uiState.consumptionUnit,
                     fontFamily = neueFontFamily,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Black,
@@ -410,23 +627,27 @@ fun LiveDataScreen(data: String, modifier: Modifier = Modifier, isBluetoothEnabl
             // socket state indicator.
             Row(modifier = Modifier.offset(113.dp, 307.dp)) {
                 Image( //Switch 1
-                    painter = imgSwitchOn,
+                    painter = imgSwitch1,
                     contentDescription = null,
-                    modifier = Modifier.size(43.dp).offset(0.dp, 17.dp)
+                    modifier = Modifier
+                        .size(43.dp)
+                        .offset(0.dp, 17.dp)
                 )
                 Image( //Light
-                    painter = imgLightOn,
+                    painter = imgLight,
                     contentDescription = null,
                     modifier = Modifier.size(73.dp)
                 )
                 Image( // Switch 2
-                    painter = imgSwitchOff,
+                    painter = imgSwitch2,
                     contentDescription = null,
-                    modifier = Modifier.size(43.dp).offset(0.dp, 17.dp)
+                    modifier = Modifier
+                        .size(43.dp)
+                        .offset(0.dp, 17.dp)
                 )
             }
 
-            Text(text = data,
+            Text(text = uiState.rcv,
                 modifier = Modifier.absoluteOffset(-9.dp,433.dp),
                 color = Color.Blue, fontSize = 10.sp,
                 fontFamily = neueFontFamily, fontWeight = FontWeight.Black
@@ -438,11 +659,11 @@ fun LiveDataScreen(data: String, modifier: Modifier = Modifier, isBluetoothEnabl
 @Preview(showBackground = true)
 @Composable
 fun PreviewLiveDataScreen() {
-    LiveDataScreen(data = "jlk;kjl;jkl;0;1;1;89;87", isBluetoothConnected = true, isBluetoothEnabled = true, isLocationEnabled = true)
+    LiveDataScreen()
 }
 
 //ALERT DIALOG BOX
-@Composable
+/*@Composable
 fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismiss: () -> Unit, onDeviceSelected: (BluetoothDevice) -> Unit) {
     // Implements a Glassmorphism dialog box.
     Dialog(
@@ -542,14 +763,13 @@ fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismiss: () -
             }
         }
     }
-}
+}*/
 
 //Auxiliary Functions.
 fun connectToDevice(
     context: Context,
     device: BluetoothDevice,
-    onConnectionResult: (Boolean, String) -> Unit,
-    onReceiveData: (String) -> Unit
+    onConnectionResult: (Boolean, String) -> Unit
 ) {
     val uuid = device.uuids[0].uuid
     val socket: BluetoothSocket? = device.createRfcommSocketToServiceRecord(uuid)
@@ -567,8 +787,7 @@ fun connectToDevice(
                         val bytesRead = inputStream.read(buffer)
                         val receivedData = String(buffer, 0, bytesRead)
                         withContext(Dispatchers.Main) {
-                            //TODO: process the data received.
-                            onReceiveData(receivedData)
+                            sendUIStateBroadcast(context, receivedData)
                         }
                     } catch (e: IOException) {
                         e.printStackTrace()
@@ -593,10 +812,10 @@ fun connectToDevice(
     }
 }
 
-/*@Composable
-fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismissRequest: () -> Unit, onDeviceSelected: (BluetoothDevice) -> Unit) {
+@Composable
+fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismiss: () -> Unit, onDeviceSelected: (BluetoothDevice) -> Unit) {
     AlertDialog(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = onDismiss,
         title = {
             Text(
                 text = "Select a bluetooth device",
@@ -645,7 +864,7 @@ fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismissReques
         containerColor = Color(0xFE226A67),
         confirmButton = {
             Button(
-                onClick = onDismissRequest,
+                onClick = onDismiss,
                 modifier = Modifier
                     .size(107.dp, 53.dp)
                     .background(
@@ -675,7 +894,7 @@ fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismissReques
         }
     )
 
-}*/
+}
 
 @Composable
 fun DeveloperSignature(
@@ -760,7 +979,7 @@ fun writeDataToCSV(context: Context, data: String, latitude: Double, longitude: 
         writer.writeNext(csvData)
         writer.close()
 
-        onResult(true, "Data logged Successfully")
+        onResult(true, "Data logged Successfully to file: $fileName")
     } catch (e: IOException) {
         e.printStackTrace()
         onResult(false, "Failed to log data: ${e.message}")
