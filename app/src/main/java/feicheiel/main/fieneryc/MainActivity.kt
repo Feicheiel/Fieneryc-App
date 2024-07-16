@@ -330,7 +330,10 @@ class UIStateViewModel(application: Application) : AndroidViewModel(application)
 
 //SCREENS.
 @Composable
-fun SplashScreen(navController: NavHostController, modifier: Modifier = Modifier){
+fun SplashScreen(
+    navController: NavHostController,
+    modifier: Modifier = Modifier
+){
     val bckgSplashScreen = painterResource(id = R.drawable.bck_splash_scr)
     val systemUiController = rememberSystemUiController()
     systemUiController.isNavigationBarVisible = false
@@ -365,7 +368,10 @@ fun SplashScreen(navController: NavHostController, modifier: Modifier = Modifier
 }
 
 @Composable
-fun ConnectScreen(navController: NavHostController, modifier: Modifier = Modifier) {
+fun ConnectScreen(
+    navController: NavHostController,
+    modifier: Modifier = Modifier
+) {
     val bckConnectScreen = painterResource(id = R.drawable.bck_conn_scr)
 
     var showDialog by remember { mutableStateOf(false) }
@@ -813,7 +819,11 @@ fun connectToDevice(
 }
 
 @Composable
-fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismiss: () -> Unit, onDeviceSelected: (BluetoothDevice) -> Unit) {
+fun BluetoothDevicesDialog(
+    pairedDevices: List<BluetoothDevice>,
+    onDismiss: () -> Unit,
+    onDeviceSelected: (BluetoothDevice) -> Unit
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -946,7 +956,11 @@ fun AppName(modifier: Modifier = Modifier) {
 }
 
 @SuppressLint("MissingPermission")
-fun logDataToCSV(context: Context, data: String, onResult: (Boolean, String) -> Unit) {
+fun logDataToCSV(
+    context: Context,
+    data: String,
+    onResult: (Boolean, String) -> Unit
+) {
     val fusedLocationClient: FusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(context)
 
     fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
@@ -962,7 +976,13 @@ fun logDataToCSV(context: Context, data: String, onResult: (Boolean, String) -> 
     }
 }
 
-fun writeDataToCSV(context: Context, data: String, latitude: Double, longitude: Double, onResult: (Boolean, String) -> Unit) {
+fun writeDataToCSV(
+    context: Context,
+    data: String,
+    latitude: Double,
+    longitude: Double,
+    onResult: (Boolean, String) -> Unit
+) {
     try {
         val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         val date = dateFormat.format(Date())
