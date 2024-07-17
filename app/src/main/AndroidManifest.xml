@@ -21,12 +21,11 @@
         android:roundIcon="@drawable/fieneryc_ico_rounded"
         android:supportsRtl="true"
         android:theme="@style/Theme.Fieneryc"
-        tools:targetApi="31">
+        >
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Fieneryc">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

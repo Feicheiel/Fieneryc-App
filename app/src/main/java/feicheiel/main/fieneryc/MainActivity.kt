@@ -5,7 +5,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -49,7 +48,6 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import android.content.Intent
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -76,26 +74,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.reflect.KMutableProperty0
 
 val neueFontFamily = FontFamily(
     Font(R.font.black, FontWeight.Black),
@@ -132,7 +131,75 @@ data class UIState (
     var rcv: String = ""
 )
 
+class BluetoothManager (
+    private val inputStream: InputStream,
+    private val outputStream: OutputStream,
+    private val context: Context
+) {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val sendChannel = Channel<String>()
+
+    init {
+        scope.launch {
+            // Start Coroutine to read from the device
+            readFromDevice()
+        }
+
+        scope.launch {
+            // Start the Coroutine to send data to the device
+            sendDataToDevice()
+        }
+    }
+
+    private suspend fun readFromDevice() {
+        try {
+            val buffer = ByteArray(64)
+            var bytes: Int
+
+            while (true) {
+                // Read from the InputStream
+                bytes = inputStream.read(buffer)
+                if (bytes > 0){
+                    val message = String(buffer, 0, bytes)
+                    withContext(Dispatchers.Main){
+                        sendUIStateBroadcast(context, message)
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
+
+    private suspend fun sendDataToDevice() {
+        for (message in sendChannel) {
+            try {
+                outputStream.write(message.toByteArray())
+            } catch (e: IOException) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    fun sendMessage(message: String) {
+        scope.launch {
+            sendChannel.send(message)
+        }
+    }
+
+    fun close() {
+        scope.cancel()
+        try {
+            inputStream.close()
+            outputStream.close()
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
+    private lateinit var bluetoothManager: KMutableProperty0<BluetoothManager>
     private val requestBluetoothPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -149,7 +216,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             FienerycTheme {
-                StartThisApp()
+                StartThisApp(bluetoothManager)
             }
         }
 
@@ -166,16 +233,21 @@ class MainActivity : ComponentActivity() {
             )
         )
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bluetoothManager.get().close()
+    }
 }
 
 @Composable
-fun StartThisApp() {
+fun StartThisApp(bluetoothManager: KMutableProperty0<BluetoothManager>) {
     val navController = rememberNavController()
 
     NavHost(navController = navController, startDestination = "splash") {
         composable("splash") { SplashScreen(navController)}
-        composable("connect") { ConnectScreen(navController) }
-        composable("data") { LiveDataScreen() }
+        composable("connect") { ConnectScreen(navController, bluetoothManager) }
+        composable("data") { LiveDataScreen(bluetoothManager) }
     }
 }
 
@@ -263,7 +335,7 @@ private fun parseData(data: String): UIState {
     // +RCV=11731,8,1312,u,1,0,1,-99,-40
     // <send_addr>,<payload_bytes>,<en>,<unit>,<s1>,<l>,<s2>,<rssi>,<snr>
     // 0,           1,              2,   3,     4,   5,  6,   7,     8
-    val parsedData = UIState(0,0.0,ConsumptionStatus.NORMAL,"",List<Boolean>(size=3){false; false; false})
+    val parsedData = UIState(0,0.0,ConsumptionStatus.NORMAL,"",listOf(false, false, false))
     val dataSplit = data.split(",")
     if (dataSplit.size < 9) {
         //means incomplete data read
@@ -275,9 +347,9 @@ private fun parseData(data: String): UIState {
             "k" -> "kWh"
             else -> {""}
         }
-        parsedData.switchStates = List<Boolean>(size = 3){
-            (dataSplit[4] == "1"); (dataSplit[5] == "1"); (dataSplit[6] == "1")
-        }
+        parsedData.switchStates = listOf(
+            (dataSplit[4] == "1"), (dataSplit[5] == "1"), (dataSplit[6] == "1")
+        )
         parsedData.consumptionStatus = if ((parsedData.energyConsumption > 150.0) && (parsedData.consumptionUnit == "kWh")) ConsumptionStatus.HIGH else ConsumptionStatus.NORMAL
         parsedData.rcv = data
     }
@@ -340,7 +412,7 @@ fun SplashScreen(
     systemUiController.setStatusBarColor(Color.Transparent)
 
     var visible by remember { mutableStateOf(true) }
-    val alpha by animateFloatAsState(targetValue = if (visible) 1f else 0f, label = "")
+    //val alpha by animateFloatAsState(targetValue = if (visible) 1f else 0f, label = "")
 
     LaunchedEffect(Unit) {
         delay(1500)
@@ -358,7 +430,7 @@ fun SplashScreen(
             modifier = Modifier.fillMaxSize()
         )
         Column(modifier.align(Alignment.BottomCenter)) {
-            AppName(Modifier.absoluteOffset(97.dp,-217.dp))
+            AppName(Modifier.absoluteOffset(97.dp, (-217).dp))
             DeveloperSignature(
                 name = stringResource(id = R.string.company_name),
                 modifier
@@ -370,6 +442,7 @@ fun SplashScreen(
 @Composable
 fun ConnectScreen(
     navController: NavHostController,
+    bluetoothManager: KMutableProperty0<BluetoothManager>,
     modifier: Modifier = Modifier
 ) {
     val bckConnectScreen = painterResource(id = R.drawable.bck_conn_scr)
@@ -443,6 +516,7 @@ fun ConnectScreen(
                     showDialog = true
                 } else {
                     enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                    showDialog = true
                 }
             },
             modifier = modifier
@@ -482,7 +556,7 @@ fun ConnectScreen(
                         if (success) {
                             navController.navigate("data")
                         }
-                    })
+                    }, bluetoothManager)
                 }
             )
         }
@@ -491,10 +565,12 @@ fun ConnectScreen(
 
 @Composable
 fun LiveDataScreen(
+    bluetoothManager: KMutableProperty0<BluetoothManager>,
+    modifier: Modifier = Modifier,
     bluetoothViewModel: BluetoothViewModel = viewModel(),
     locationViewModel: LocationViewModel = viewModel(),
-    uiStateViewModel: UIStateViewModel = viewModel(),
-    modifier: Modifier = Modifier) {
+    uiStateViewModel: UIStateViewModel = viewModel()
+) {
     val uiState by uiStateViewModel.uiState.observeAsState(UIState())
 
     // STATE VARIABLES
@@ -527,7 +603,7 @@ fun LiveDataScreen(
                            else imgNetwork0
     // log signal strength to CSV.
     val context = LocalContext.current
-    logDataToCSV(context, uiState.signalStrength.toString()) {isSuccess, msg ->
+    logDataToCSV(context, uiState.signalStrength.toString()) {_, msg ->
         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
@@ -637,11 +713,17 @@ fun LiveDataScreen(
                     modifier = Modifier
                         .size(43.dp)
                         .offset(0.dp, 17.dp)
+                        .clickable {
+                            bluetoothManager.get().sendMessage("A${if (uiState.switchStates[0]) 1 else 0}, ")
+                        }
                 )
                 Image( //Light
                     painter = imgLight,
                     contentDescription = null,
                     modifier = Modifier.size(73.dp)
+                        .clickable {
+                            bluetoothManager.get().sendMessage("L${if (uiState.switchStates[1]) 1 else 0}, ")
+                        }
                 )
                 Image( // Switch 2
                     painter = imgSwitch2,
@@ -649,11 +731,14 @@ fun LiveDataScreen(
                     modifier = Modifier
                         .size(43.dp)
                         .offset(0.dp, 17.dp)
+                        .clickable {
+                            bluetoothManager.get().sendMessage("B${if (uiState.switchStates[2]) 1 else 0}, ")
+                        }
                 )
             }
 
             Text(text = uiState.rcv,
-                modifier = Modifier.absoluteOffset(-9.dp,433.dp),
+                modifier = Modifier.absoluteOffset((-9).dp,433.dp),
                 color = Color.Blue, fontSize = 10.sp,
                 fontFamily = neueFontFamily, fontWeight = FontWeight.Black
             )
@@ -664,7 +749,7 @@ fun LiveDataScreen(
 @Preview(showBackground = true)
 @Composable
 fun PreviewLiveDataScreen() {
-    LiveDataScreen()
+    //LiveDataScreen()
 }
 
 //ALERT DIALOG BOX
@@ -774,45 +859,22 @@ fun BluetoothDevicesDialog(pairedDevices: List<BluetoothDevice>, onDismiss: () -
 fun connectToDevice(
     context: Context,
     device: BluetoothDevice,
-    onConnectionResult: (Boolean, String) -> Unit
+    onConnectionResult: (Boolean, String) -> Unit,
+    bluetoothManager: KMutableProperty0<BluetoothManager>
 ) {
     val uuid = device.uuids[0].uuid
-    val socket: BluetoothSocket? = device.createRfcommSocketToServiceRecord(uuid)
-    socket?.let{
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                it.connect()
-                onConnectionResult(true, "Successfully connected to ${device.name}")
-
-                // Start Listening for data in a loop
-                val inputStream = it.inputStream
-                val buffer = ByteArray(1024)
-                while (true) {
-                    try {
-                        val bytesRead = inputStream.read(buffer)
-                        val receivedData = String(buffer, 0, bytesRead)
-                        withContext(Dispatchers.Main) {
-                            sendUIStateBroadcast(context, receivedData)
-                        }
-                    } catch (e: IOException) {
-                        e.printStackTrace()
-                        break
-                    }
-                }
-            } catch (e: IOException) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    onConnectionResult(
-                        false,
-                        "Failed to connect to ${device.name}. Please Try again!\n${e.cause} "
-                    )
-                }
-                try {
-                    it.close()
-                } catch (closeException: IOException) {
-                    closeException.printStackTrace()
-                }
-            }
+    val socket: BluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
+    try {
+        socket.connect()
+        onConnectionResult(true, "Successfully connected to ${device.name}")
+        bluetoothManager.set(BluetoothManager(socket.inputStream, socket.outputStream, context))
+    } catch (e: IOException) {
+        e.printStackTrace()
+        onConnectionResult(false, "Connection to ${device.name} failed")
+        try {
+            socket.close()
+        } catch (c: IOException){
+            c.printStackTrace()
         }
     }
 }
