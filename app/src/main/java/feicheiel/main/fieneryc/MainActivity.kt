@@ -771,7 +771,7 @@ fun LiveDataScreen(
 @Preview(showBackground = true)
 @Composable
 fun PreviewLiveDataScreen() {
-    //LiveDataScreen()
+    LiveDataScreen(BluetoothManager())
 }
 
 //ALERT DIALOG BOX
