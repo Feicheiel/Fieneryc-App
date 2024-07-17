@@ -1,27 +1,49 @@
 package feicheiel.main.fieneryc
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Application
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.location.Location
+import android.location.LocationManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.NoLiveLiterals
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,7 +51,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -37,55 +61,31 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.navigation.NavHostController
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothSocket
-import android.content.Intent
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.platform.LocalContext
-import feicheiel.main.fieneryc.ui.theme.FienerycTheme
-import kotlinx.coroutines.delay
-import android.annotation.SuppressLint
-import android.app.Application
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.IntentFilter
-import android.location.Location
-import android.location.LocationManager
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationServices
-import com.opencsv.CSVWriter
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.AlertDialog
-import androidx.compose.runtime.*
-import androidx.compose.runtime.livedata.observeAsState
-import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.google.accompanist.systemuicontroller.rememberSystemUiController
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import com.opencsv.CSVWriter
+import feicheiel.main.fieneryc.ui.theme.FienerycTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
@@ -132,9 +132,9 @@ data class UIState (
 )
 
 class BluetoothManager (
-    private val inputStream: InputStream,
-    private val outputStream: OutputStream,
-    private val context: Context
+    var inputStream: InputStream? = null,
+    var outputStream: OutputStream? = null,
+    var context: Context? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val sendChannel = Channel<String>()
@@ -158,11 +158,11 @@ class BluetoothManager (
 
             while (true) {
                 // Read from the InputStream
-                bytes = inputStream.read(buffer)
+                bytes = inputStream?.read(buffer) ?: 0
                 if (bytes > 0){
                     val message = String(buffer, 0, bytes)
                     withContext(Dispatchers.Main){
-                        sendUIStateBroadcast(context, message)
+                        context?.let { sendUIStateBroadcast(it, message) }
                     }
                 }
             }
@@ -174,7 +174,9 @@ class BluetoothManager (
     private suspend fun sendDataToDevice() {
         for (message in sendChannel) {
             try {
-                outputStream.write(message.toByteArray())
+                withContext(Dispatchers.IO) {
+                    outputStream?.write(message.toByteArray())
+                }
             } catch (e: IOException) {
                 e.printStackTrace()
             }
@@ -190,16 +192,29 @@ class BluetoothManager (
     fun close() {
         scope.cancel()
         try {
-            inputStream.close()
-            outputStream.close()
+            inputStream?.close()
+            outputStream?.close()
         } catch (e: IOException) {
             e.printStackTrace()
         }
     }
 }
 
+fun modifyOSProperty(osref: KMutableProperty0<OutputStream?>, newValue: OutputStream?){
+    osref.set(newValue)
+}
+fun modifyISProperty(isref: KMutableProperty0<InputStream?>, newValue: InputStream?){
+    isref.set(newValue)
+}
+fun modifyCNTProperty(cnref: KMutableProperty0<Context?>, newValue: Context?){
+    cnref.set(newValue)
+}
+
 class MainActivity : ComponentActivity() {
-    private lateinit var bluetoothManager: KMutableProperty0<BluetoothManager>
+    private val bluetoothManager = BluetoothManager()
+    val bmInputStreamProperty: KMutableProperty0<InputStream?> = bluetoothManager::inputStream
+    val bmOutputStreamProperty: KMutableProperty0<OutputStream?> = bluetoothManager::outputStream
+    val bmContextProperty: KMutableProperty0<Context?> = bluetoothManager::context
     private val requestBluetoothPermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -210,13 +225,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         setContent {
             FienerycTheme {
-                StartThisApp(bluetoothManager)
+                StartThisApp(bluetoothManager, isProperty = bmInputStreamProperty, osProperty = bmOutputStreamProperty, cnProperty = bmContextProperty)
             }
         }
 
@@ -236,17 +252,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        bluetoothManager.get().close()
+        bluetoothManager.close()
     }
 }
 
 @Composable
-fun StartThisApp(bluetoothManager: KMutableProperty0<BluetoothManager>) {
+fun StartThisApp(bluetoothManager: BluetoothManager,
+                 isProperty: KMutableProperty0<InputStream?>,
+                 osProperty: KMutableProperty0<OutputStream?>,
+                 cnProperty: KMutableProperty0<Context?>
+) {
     val navController = rememberNavController()
 
     NavHost(navController = navController, startDestination = "splash") {
         composable("splash") { SplashScreen(navController)}
-        composable("connect") { ConnectScreen(navController, bluetoothManager) }
+        composable("connect") { ConnectScreen(navController, cnProperty=cnProperty, osProperty = osProperty, isProperty = isProperty) }
         composable("data") { LiveDataScreen(bluetoothManager) }
     }
 }
@@ -442,7 +462,9 @@ fun SplashScreen(
 @Composable
 fun ConnectScreen(
     navController: NavHostController,
-    bluetoothManager: KMutableProperty0<BluetoothManager>,
+    isProperty: KMutableProperty0<InputStream?>,
+    osProperty: KMutableProperty0<OutputStream?>,
+    cnProperty: KMutableProperty0<Context?>,
     modifier: Modifier = Modifier
 ) {
     val bckConnectScreen = painterResource(id = R.drawable.bck_conn_scr)
@@ -516,7 +538,7 @@ fun ConnectScreen(
                     showDialog = true
                 } else {
                     enableBluetoothLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                    showDialog = true
+                    //showDialog = true
                 }
             },
             modifier = modifier
@@ -551,12 +573,12 @@ fun ConnectScreen(
                 onDeviceSelected = {device ->
                     selectedDevice = device
                     showDialog = false
-                    connectToDevice(context, device, onConnectionResult = {success, message ->
+                    connectToDevice(context, device, onConnectionResult = { success, message ->
                         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                         if (success) {
                             navController.navigate("data")
                         }
-                    }, bluetoothManager)
+                    }, isProperty, osProperty, cnProperty)
                 }
             )
         }
@@ -565,7 +587,7 @@ fun ConnectScreen(
 
 @Composable
 fun LiveDataScreen(
-    bluetoothManager: KMutableProperty0<BluetoothManager>,
+    bluetoothManager: BluetoothManager,
     modifier: Modifier = Modifier,
     bluetoothViewModel: BluetoothViewModel = viewModel(),
     locationViewModel: LocationViewModel = viewModel(),
@@ -714,7 +736,7 @@ fun LiveDataScreen(
                         .size(43.dp)
                         .offset(0.dp, 17.dp)
                         .clickable {
-                            bluetoothManager.get().sendMessage("A${if (uiState.switchStates[0]) 1 else 0}, ")
+                            bluetoothManager.sendMessage("A${if (uiState.switchStates[0]) 1 else 0}, ")
                         }
                 )
                 Image( //Light
@@ -722,7 +744,7 @@ fun LiveDataScreen(
                     contentDescription = null,
                     modifier = Modifier.size(73.dp)
                         .clickable {
-                            bluetoothManager.get().sendMessage("L${if (uiState.switchStates[1]) 1 else 0}, ")
+                            bluetoothManager.sendMessage("L${if (uiState.switchStates[1]) 1 else 0}, ")
                         }
                 )
                 Image( // Switch 2
@@ -732,7 +754,7 @@ fun LiveDataScreen(
                         .size(43.dp)
                         .offset(0.dp, 17.dp)
                         .clickable {
-                            bluetoothManager.get().sendMessage("B${if (uiState.switchStates[2]) 1 else 0}, ")
+                            bluetoothManager.sendMessage("B${if (uiState.switchStates[2]) 1 else 0}, ")
                         }
                 )
             }
@@ -860,14 +882,19 @@ fun connectToDevice(
     context: Context,
     device: BluetoothDevice,
     onConnectionResult: (Boolean, String) -> Unit,
-    bluetoothManager: KMutableProperty0<BluetoothManager>
+    isProperty: KMutableProperty0<InputStream?>,
+    osProperty: KMutableProperty0<OutputStream?>,
+    contextProperty: KMutableProperty0<Context?>,
 ) {
     val uuid = device.uuids[0].uuid
     val socket: BluetoothSocket = device.createRfcommSocketToServiceRecord(uuid)
     try {
         socket.connect()
         onConnectionResult(true, "Successfully connected to ${device.name}")
-        bluetoothManager.set(BluetoothManager(socket.inputStream, socket.outputStream, context))
+        //bluetoothManager.set(BluetoothManager(socket.inputStream, socket.outputStream, context))
+        modifyISProperty(isProperty, socket.inputStream)
+        modifyOSProperty(osProperty, socket.outputStream)
+        modifyCNTProperty(contextProperty, context)
     } catch (e: IOException) {
         e.printStackTrace()
         onConnectionResult(false, "Connection to ${device.name} failed")
