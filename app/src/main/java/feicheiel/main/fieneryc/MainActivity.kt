@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -396,16 +397,16 @@ private fun parseData(data: String): UIState {
     } else {
         parsedData.energyConsumption = dataSplit[2].toDouble()
         parsedData.signalStrength = dataSplit[7].toInt()
-        parsedData.consumptionUnit = when (dataSplit[3]) {
-            "u" -> "Wh"
-            "k" -> "kWh"
+        parsedData.consumptionUnit = when (dataSplit[3][0]) {
+            'u' -> "Wh"
+            'k' -> "kWh"
             else -> {""}
         }
         parsedData.switchStates = listOf(
             (dataSplit[4] == "1"), (dataSplit[5] == "1"), (dataSplit[6] == "1")
         )
         parsedData.isConsumptionHigh = if ((parsedData.energyConsumption > 150.0) && (parsedData.consumptionUnit == "kWh")) true else false
-        parsedData.rcv = data
+        parsedData.rcv = "data: $data \nparts: en=${parsedData.energyConsumption}(${dataSplit[3][0]})${parsedData.consumptionUnit}, s1=${if(parsedData.switchStates[0]) "on" else "off"}, s2=${if(parsedData.switchStates[2]) "on" else "off"}, L=${if(parsedData.switchStates[1]) "on" else "off"}"
     }
     return parsedData
 }
@@ -433,7 +434,7 @@ class UIStateViewModel(application: Application) : AndroidViewModel(application)
                 BroadcastActions.ACTION_UPDATE_UI_STATE -> {
                     val signalStrength = intent.getIntExtra("signalStrength", 0)
                     val energyConsumption = intent.getDoubleExtra("energyConsumption", 0.0)
-                    val consumptionUnit = intent.getStringExtra("consumptionUint") ?: ""
+                    val consumptionUnit = intent.getStringExtra("consumptionUnit") ?: ""
                     val isConsumptionHigh = intent.getBooleanExtra("isConsumptionHigh", false)
                     val switchStates = intent.getBooleanArrayExtra("switchStates")?.toList() ?: listOf(false, false, false)
                     val rcv = intent.getStringExtra("rcv") ?: ""
@@ -630,15 +631,23 @@ fun LiveDataScreen(
     uiStateViewModel: UIStateViewModel = viewModel()
 ) {
     val uiState by uiStateViewModel.uiState.observeAsState(UIState())
+    val systemUiController = rememberSystemUiController()
+    systemUiController.isNavigationBarVisible = false
+    systemUiController.setStatusBarColor(Color.Transparent)
     var isFullScreen by remember { mutableStateOf(true) }
     val activity = LocalContext.current as Activity
 
     fun enterFullScreen(activity: Activity) {
         WindowCompat.setDecorFitsSystemWindows(activity.window, false)
         activity.window.decorView.systemUiVisibility = View.KEEP_SCREEN_ON or
-                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_IMMERSIVE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_LAYOUT_FLAGS or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_IMMERSIVE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_LAYOUT_FLAGS or
+                //View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
     }
 
     fun exitFullScreen(activity: Activity) {
@@ -755,7 +764,7 @@ fun LiveDataScreen(
             // status indicator.
             Row (modifier = Modifier
                 .align(Alignment.End)
-                .offset(y = 33.dp)
+                .offset(y = 23.dp, x = -(15).dp)
             ){
                 Image(
                     painter = imgBluetoothState,
@@ -775,11 +784,12 @@ fun LiveDataScreen(
                     contentDescription = null,
                     modifier = Modifier.size(17.dp)
                 )
+                Spacer(Modifier.width(7.dp))
                 Image(
                     painter = imgBallSensors,
                     contentDescription = null,
                     modifier = Modifier
-                        .size(3.dp)
+                        .size(4.dp)
                         .offset(0.dp, 7.dp)
                 )
             }
@@ -788,15 +798,18 @@ fun LiveDataScreen(
             Box(
                 modifier = Modifier
                     .offset(31.dp, 270.dp)
-                    .size(307.dp)
+                    .size(270.dp)
             ){
-                Image(painter = imgRing, contentDescription = null)
+                Image(painter = imgRing, contentDescription = null,
+                    modifier = Modifier.size(233.dp)
+                        .offset(x = 27.dp)
+                )
                 Text (
-                    text = uiState.energyConsumption.toString(),
+                    text = uiState.energyConsumption.toInt().toString(),
                     fontFamily = neueFontFamily,
-                    fontSize = 77.sp,
+                    fontSize = 67.sp,
                     fontWeight = FontWeight.Black,
-                    modifier = Modifier.offset(77.dp, 117.dp)
+                    modifier = Modifier.offset(83.dp, 93.dp)
                 )
                 Image(
                     painter = imgBallConsume,
@@ -806,21 +819,22 @@ fun LiveDataScreen(
                         .size(5.dp)
                 )
                 Text (
-                    text = uiState.consumptionUnit,
+                    text = /* if (uiState.consumptionUnit == "") "_Wh" else */ uiState.consumptionUnit,
                     fontFamily = neueFontFamily,
                     fontSize = 17.sp,
+                    color = if (uiState.isConsumptionHigh) Color(0xff003700) else Color(0xff370000),
                     fontWeight = FontWeight.Black,
                     modifier = Modifier.offset(270.dp, 33.dp)
                 )
             }
             // socket state indicator.
-            Row(modifier = Modifier.offset(113.dp, 307.dp)) {
+            Row(modifier = Modifier.offset(123.dp, 307.dp)) {
                 Image( //Switch 1
                     painter = imgSwitch1,
                     contentDescription = null,
                     modifier = Modifier
-                        .size(43.dp)
-                        .offset(0.dp, 17.dp)
+                        .size(33.dp)
+                        .offset(0.dp, 3.dp)
                         .clickable {
                             bluetoothManager.sendMessage("A${if (uiState.switchStates[0]) 1 else 0}, ")
                         }
@@ -829,7 +843,7 @@ fun LiveDataScreen(
                     painter = imgLight,
                     contentDescription = null,
                     modifier = Modifier
-                        .size(73.dp)
+                        .size(33.dp)
                         .clickable {
                             bluetoothManager.sendMessage("L${if (uiState.switchStates[1]) 1 else 0}, ")
                         }
@@ -838,8 +852,8 @@ fun LiveDataScreen(
                     painter = imgSwitch2,
                     contentDescription = null,
                     modifier = Modifier
-                        .size(43.dp)
-                        .offset(0.dp, 17.dp)
+                        .size(33.dp)
+                        .offset(0.dp, 3.dp)
                         .clickable {
                             bluetoothManager.sendMessage("B${if (uiState.switchStates[2]) 1 else 0}, ")
                         }
@@ -847,9 +861,9 @@ fun LiveDataScreen(
             }
 
             Text(text = uiState.rcv,
-                modifier = Modifier.absoluteOffset((-9).dp,433.dp),
-                color = Color.Blue, fontSize = 10.sp,
-                fontFamily = neueFontFamily, fontWeight = FontWeight.Black
+                modifier = Modifier.absoluteOffset((-9).dp,473.dp),
+                color = Color.Blue, fontSize = 5.sp,
+                fontFamily = neueFontFamily, fontWeight = FontWeight.Light
             )
         }
     }
@@ -857,11 +871,7 @@ fun LiveDataScreen(
 
 }
 
-@Preview(showBackground = true)
-@Composable
-fun PreviewLiveDataScreen() {
-    //LiveDataScreen(BluetoothManager())
-}
+
 
 //ALERT DIALOG BOX
 /*@Composable
@@ -1184,7 +1194,7 @@ fun writeDataToCSV(
         writer.writeNext(csvData)
         writer.close()
 
-        onResult(true, "Data logged Successfully to file: $fileName")
+        //onResult(true, "Data logged Successfully to file: $fileName")
     } catch (e: IOException) {
         e.printStackTrace()
         onResult(false, "Failed to log data: ${e.message}")
