@@ -2,6 +2,7 @@ package feicheiel.main.fieneryc
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -13,6 +14,7 @@ import android.content.IntentFilter
 import android.location.Location
 import android.location.LocationManager
 import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -22,6 +24,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,9 +52,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -64,6 +69,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -248,10 +254,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         setContent {
             FienerycTheme {
@@ -290,7 +297,7 @@ fun StartThisApp(bluetoothManager: BluetoothManager,
     NavHost(navController = navController, startDestination = "splash") {
         composable("splash") { SplashScreen(navController)}
         composable("connect") { ConnectScreen(navController, cnProperty=cnProperty, osProperty = osProperty, isProperty = isProperty, bm = bluetoothManager) }
-        composable("data") { LiveDataScreen(bluetoothManager) }
+        composable("data") { LiveDataScreen(bluetoothManager, navController) }
     }
 }
 
@@ -613,23 +620,59 @@ fun ConnectScreen(
 @Composable
 fun LiveDataScreen(
     bluetoothManager: BluetoothManager,
+    navController: NavHostController,
     modifier: Modifier = Modifier,
     bluetoothViewModel: BluetoothViewModel = viewModel(),
     locationViewModel: LocationViewModel = viewModel(),
     uiStateViewModel: UIStateViewModel = viewModel()
 ) {
     val uiState by uiStateViewModel.uiState.observeAsState(UIState())
+    var isFullScreen by remember { mutableStateOf(true) }
+    val activity = LocalContext.current as Activity
+
+    fun enterFullScreen(activity: Activity) {
+        WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+        activity.window.decorView.systemUiVisibility = View.KEEP_SCREEN_ON or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_IMMERSIVE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_LAYOUT_FLAGS or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+    }
+
+    fun exitFullScreen(activity: Activity) {
+        WindowCompat.setDecorFitsSystemWindows(activity.window, true)
+        activity.window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    }
+
+    LaunchedEffect(Unit) {
+        enterFullScreen(activity)
+    }
+
+    fun toggleFullScreen() {
+        if (isFullScreen) {
+            exitFullScreen(activity)
+        } else {
+            enterFullScreen(activity)
+        }
+        isFullScreen = !isFullScreen
+    }
 
     // STATE VARIABLES
     // 1. Bluetooth
     val imgBluetoothOn = painterResource(id = R.drawable.bluetooth)
     val imgBluetoothOff = painterResource(id = R.drawable.bluetooth_off)
     val imgBluetoothConnected = painterResource(id = R.drawable.bluetooth_connected)
-    val bluetoothState by bluetoothViewModel.bluetoothState.observeAsState(BluetoothState.OFF)
+    val bluetoothState by bluetoothViewModel.bluetoothState.observeAsState(BluetoothState.CONNECTED)
     val imgBluetoothState: Painter = when (bluetoothState) {
         BluetoothState.OFF -> imgBluetoothOff
         BluetoothState.CONNECTED -> imgBluetoothConnected
         BluetoothState.DISCONNECTED -> imgBluetoothOn
+    }
+    if (bluetoothState != BluetoothState.CONNECTED) {
+        bluetoothManager.close()
+        navController.navigate("connect")
     }
     // 2. Location
     val imgLocationOn = painterResource(id = R.drawable.location_on)
@@ -678,7 +721,24 @@ fun LiveDataScreen(
     val bckLiveData = painterResource(id = R.drawable.bck_live_data_scr)
 
     // Draw the UI
-    Box (modifier.fillMaxSize()){
+    Box (
+        modifier
+            .fillMaxSize()
+            .alpha(
+                when (bluetoothState) {
+                    BluetoothState.CONNECTED -> 1.0f
+                    BluetoothState.OFF -> 0.3f
+                    BluetoothState.DISCONNECTED -> 0.7f
+                }
+            )
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        toggleFullScreen()
+                    }
+                )
+            }
+    ){
         Image(
             painter = bckLiveData,
             contentDescription = "This is a nice background",
@@ -690,7 +750,10 @@ fun LiveDataScreen(
                 .fillMaxSize()
                 .padding(10.dp)){
             // status indicator.
-            Row (modifier = Modifier.align(Alignment.End)){
+            Row (modifier = Modifier
+                .align(Alignment.End)
+                .offset(y = 33.dp)
+            ){
                 Image(
                     painter = imgBluetoothState,
                     contentDescription = "Bluetooth Status indicator: ON, OFF, or CONNECTED",
@@ -762,7 +825,8 @@ fun LiveDataScreen(
                 Image( //Light
                     painter = imgLight,
                     contentDescription = null,
-                    modifier = Modifier.size(73.dp)
+                    modifier = Modifier
+                        .size(73.dp)
                         .clickable {
                             bluetoothManager.sendMessage("L${if (uiState.switchStates[1]) 1 else 0}, ")
                         }
@@ -786,12 +850,14 @@ fun LiveDataScreen(
             )
         }
     }
+
+
 }
 
 @Preview(showBackground = true)
 @Composable
 fun PreviewLiveDataScreen() {
-    LiveDataScreen(BluetoothManager())
+    //LiveDataScreen(BluetoothManager())
 }
 
 //ALERT DIALOG BOX
@@ -914,13 +980,8 @@ fun connectToDevice(
         onConnectionResult(true, "Successfully connected to ${device.name}")
 
         bluetoothManager.initializeContext(contextProperty, context)
-        //bluetoothManager.set(BluetoothManager(socket.inputStream, socket.outputStream, context))
-        //modifyISProperty(isProperty, socket.inputStream)
         bluetoothManager.initializeInputStream(isProperty, socket.inputStream)
-        //modifyOSProperty(osProperty, socket.outputStream)
         bluetoothManager.initializeOutputStream(osProperty, socket.outputStream)
-        //modifyCNTProperty(contextProperty, context)
-
     } catch (e: IOException) {
         e.printStackTrace()
         onConnectionResult(false, "Connection to ${device.name} failed")
