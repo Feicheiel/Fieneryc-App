@@ -11,9 +11,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Environment
 import android.view.View
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -69,6 +71,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
@@ -1136,6 +1139,11 @@ fun logDataToCSV(
     data: String,
     onResult: (Boolean, String) -> Unit
 ) {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        onResult(false, "Location permission not granted")
+        return
+    }
+
     val fusedLocationClient: FusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(context)
 
     fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
@@ -1163,7 +1171,9 @@ fun writeDataToCSV(
         val date = dateFormat.format(Date())
         val fileName = "fieneryc-$date.csv"
 
-        val file = File(context.filesDir, fileName)
+        val documentsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        val file = File(documentsDir, fileName)
+
         val writer = if (file.exists()) {
             CSVWriter(FileWriter(file, true))
         } else {
