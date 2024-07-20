@@ -117,15 +117,11 @@ enum class LocationState {
 object BroadcastActions {
     const val ACTION_UPDATE_UI_STATE = "feicheiel.main.fieneryc.ACTION_UPDATE_UI_STATE"
 }
-enum class ConsumptionStatus {
-    NORMAL,
-    HIGH
-}
 
 data class UIState (
     var signalStrength: Int = 0,
     var energyConsumption: Double = 0.0,
-    var consumptionStatus: ConsumptionStatus = ConsumptionStatus.NORMAL,
+    var isConsumptionHigh: Boolean = false,
     var consumptionUnit: String = "",
     var switchStates: List<Boolean> = listOf(false, false, false),
     var rcv: String = ""
@@ -139,30 +135,43 @@ class BluetoothManager (
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val sendChannel = Channel<String>()
 
-    init {
-        scope.launch {
-            // Start Coroutine to read from the device
-            readFromDevice()
-        }
-
-        scope.launch {
-            // Start the Coroutine to send data to the device
-            sendDataToDevice()
-        }
-    }
-
     private suspend fun readFromDevice() {
         try {
-            val buffer = ByteArray(64)
-            var bytes: Int
+            var sRead: Char = ' '
+            var stringSRead: String = ""
 
             while (true) {
                 // Read from the InputStream
-                bytes = inputStream?.read(buffer) ?: 0
-                if (bytes > 0){
-                    val message = String(buffer, 0, bytes)
-                    withContext(Dispatchers.Main){
-                        context?.let { sendUIStateBroadcast(it, message) }
+                withContext(Dispatchers.IO){
+
+                    // Reader
+                    var countComma = 0
+                    while(inputStream?.available()!! > 0) {
+                        sRead = inputStream?.read()!!.toChar()
+                        when (sRead) {
+                            '+' -> {
+                                stringSRead = ""; countComma = 0
+                                stringSRead += sRead
+                            }
+                            ',' -> {
+                                countComma+=1
+                                stringSRead += sRead
+                            }
+                            '\r', '\n' -> {
+                                sRead = ' '
+                                stringSRead += sRead
+                            }
+                            else -> {
+                                stringSRead += sRead
+                            }
+                        }
+                    }
+                    // Send broadcast
+                    if (countComma == 8 && stringSRead[0] == '+'){
+                        println(stringSRead)
+                        withContext(Dispatchers.Main){
+                            context?.let { sendUIStateBroadcast(it, stringSRead) }
+                        }
                     }
                 }
             }
@@ -198,16 +207,30 @@ class BluetoothManager (
             e.printStackTrace()
         }
     }
-}
 
-fun modifyOSProperty(osref: KMutableProperty0<OutputStream?>, newValue: OutputStream?){
-    osref.set(newValue)
-}
-fun modifyISProperty(isref: KMutableProperty0<InputStream?>, newValue: InputStream?){
-    isref.set(newValue)
-}
-fun modifyCNTProperty(cnref: KMutableProperty0<Context?>, newValue: Context?){
-    cnref.set(newValue)
+    public fun initializeInputStream(isref: KMutableProperty0<InputStream?>, realIS: InputStream?){
+        isref.set(realIS)
+        if (inputStream != null){
+            scope.launch {
+                // Start Coroutine to read from the device
+                readFromDevice()
+            }
+        }
+    }
+
+    public fun initializeOutputStream(osref: KMutableProperty0<OutputStream?>, realIS: OutputStream?){
+        osref.set(realIS)
+        if (outputStream != null){
+            scope.launch {
+                // Start the Coroutine to send data to the device
+                sendDataToDevice()
+            }
+        }
+    }
+
+    public fun initializeContext(contextref: KMutableProperty0<Context?>, realIS: Context?){
+        contextref.set(realIS)
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -266,7 +289,7 @@ fun StartThisApp(bluetoothManager: BluetoothManager,
 
     NavHost(navController = navController, startDestination = "splash") {
         composable("splash") { SplashScreen(navController)}
-        composable("connect") { ConnectScreen(navController, cnProperty=cnProperty, osProperty = osProperty, isProperty = isProperty) }
+        composable("connect") { ConnectScreen(navController, cnProperty=cnProperty, osProperty = osProperty, isProperty = isProperty, bm = bluetoothManager) }
         composable("data") { LiveDataScreen(bluetoothManager) }
     }
 }
@@ -296,6 +319,7 @@ class BluetoothViewModel(application: Application) : AndroidViewModel(applicatio
     class BluetoothStateReceiver(
         private val onBluetoothStateChanged: (BluetoothState) -> Unit
     ) : BroadcastReceiver() {
+        // ToDo: rectify the receiver to respond accurately to bluetooth state changes.
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 BluetoothAdapter.ACTION_STATE_CHANGED -> {
@@ -355,7 +379,7 @@ private fun parseData(data: String): UIState {
     // +RCV=11731,8,1312,u,1,0,1,-99,-40
     // <send_addr>,<payload_bytes>,<en>,<unit>,<s1>,<l>,<s2>,<rssi>,<snr>
     // 0,           1,              2,   3,     4,   5,  6,   7,     8
-    val parsedData = UIState(0,0.0,ConsumptionStatus.NORMAL,"",listOf(false, false, false))
+    val parsedData = UIState(0,0.0,false,"",listOf(false, false, false))
     val dataSplit = data.split(",")
     if (dataSplit.size < 9) {
         //means incomplete data read
@@ -370,7 +394,7 @@ private fun parseData(data: String): UIState {
         parsedData.switchStates = listOf(
             (dataSplit[4] == "1"), (dataSplit[5] == "1"), (dataSplit[6] == "1")
         )
-        parsedData.consumptionStatus = if ((parsedData.energyConsumption > 150.0) && (parsedData.consumptionUnit == "kWh")) ConsumptionStatus.HIGH else ConsumptionStatus.NORMAL
+        parsedData.isConsumptionHigh = if ((parsedData.energyConsumption > 150.0) && (parsedData.consumptionUnit == "kWh")) true else false
         parsedData.rcv = data
     }
     return parsedData
@@ -381,7 +405,7 @@ fun sendUIStateBroadcast(context: Context, data: String) {
     val intent = Intent(BroadcastActions.ACTION_UPDATE_UI_STATE).apply {
         putExtra("signalStrength", uiState.signalStrength)
         putExtra("energyConsumption", uiState.energyConsumption)
-        putExtra("consumptionStatus", uiState.consumptionStatus)
+        putExtra("isConsumptionHigh", uiState.isConsumptionHigh)
         putExtra("consumptionUnit", uiState.consumptionUnit)
         putExtra("switchStates", uiState.switchStates.toBooleanArray())
         putExtra("rcv", uiState.rcv)
@@ -400,10 +424,10 @@ class UIStateViewModel(application: Application) : AndroidViewModel(application)
                     val signalStrength = intent.getIntExtra("signalStrength", 0)
                     val energyConsumption = intent.getDoubleExtra("energyConsumption", 0.0)
                     val consumptionUnit = intent.getStringExtra("consumptionUint") ?: ""
-                    val consumptionStatus = ConsumptionStatus.entries[intent.getIntExtra("consumptionStatus", 0)]
+                    val isConsumptionHigh = intent.getBooleanExtra("isConsumptionHigh", false)
                     val switchStates = intent.getBooleanArrayExtra("switchStates")?.toList() ?: listOf(false, false, false)
                     val rcv = intent.getStringExtra("rcv") ?: ""
-                    _uiState.value = UIState(signalStrength, energyConsumption, consumptionStatus, consumptionUnit, switchStates, rcv)
+                    _uiState.value = UIState(signalStrength, energyConsumption, isConsumptionHigh, consumptionUnit, switchStates, rcv)
                 }
             }
         }
@@ -462,6 +486,7 @@ fun SplashScreen(
 @Composable
 fun ConnectScreen(
     navController: NavHostController,
+    bm: BluetoothManager,
     isProperty: KMutableProperty0<InputStream?>,
     osProperty: KMutableProperty0<OutputStream?>,
     cnProperty: KMutableProperty0<Context?>,
@@ -578,7 +603,7 @@ fun ConnectScreen(
                         if (success) {
                             navController.navigate("data")
                         }
-                    }, isProperty, osProperty, cnProperty)
+                    }, bm, isProperty, osProperty, cnProperty)
                 }
             )
         }
@@ -632,16 +657,11 @@ fun LiveDataScreen(
     // 4. Ring Colour & Alert Indicator.
     val imgRingRed = painterResource(id = R.drawable.red_ring)
     val imgRingGreen = painterResource(id = R.drawable.green_ring)
-    val imgRing: Painter = when (uiState.consumptionStatus) {
-        ConsumptionStatus.HIGH -> imgRingRed
-        ConsumptionStatus.NORMAL -> imgRingGreen
-    }
+    val imgRing: Painter = if (uiState.isConsumptionHigh) imgRingRed else imgRingGreen
     val imgBallRed = painterResource(id = R.drawable.red_ball)
     val imgBallGreen = painterResource(id = R.drawable.green_ball)
-    val imgBallConsume: Painter = when (uiState.consumptionStatus) {
-        ConsumptionStatus.HIGH -> imgBallRed
-        ConsumptionStatus.NORMAL -> imgBallGreen
-    }
+    val imgBallConsume: Painter = if (uiState.isConsumptionHigh) imgBallRed else imgBallGreen
+
     val imgBallSensors: Painter = if ((locationState == LocationState.ENABLED) && (bluetoothState == BluetoothState.CONNECTED)) imgBallGreen else imgBallRed
 
 
@@ -882,6 +902,7 @@ fun connectToDevice(
     context: Context,
     device: BluetoothDevice,
     onConnectionResult: (Boolean, String) -> Unit,
+    bluetoothManager: BluetoothManager,
     isProperty: KMutableProperty0<InputStream?>,
     osProperty: KMutableProperty0<OutputStream?>,
     contextProperty: KMutableProperty0<Context?>,
@@ -891,10 +912,15 @@ fun connectToDevice(
     try {
         socket.connect()
         onConnectionResult(true, "Successfully connected to ${device.name}")
+
+        bluetoothManager.initializeContext(contextProperty, context)
         //bluetoothManager.set(BluetoothManager(socket.inputStream, socket.outputStream, context))
-        modifyISProperty(isProperty, socket.inputStream)
-        modifyOSProperty(osProperty, socket.outputStream)
-        modifyCNTProperty(contextProperty, context)
+        //modifyISProperty(isProperty, socket.inputStream)
+        bluetoothManager.initializeInputStream(isProperty, socket.inputStream)
+        //modifyOSProperty(osProperty, socket.outputStream)
+        bluetoothManager.initializeOutputStream(osProperty, socket.outputStream)
+        //modifyCNTProperty(contextProperty, context)
+
     } catch (e: IOException) {
         e.printStackTrace()
         onConnectionResult(false, "Connection to ${device.name} failed")
